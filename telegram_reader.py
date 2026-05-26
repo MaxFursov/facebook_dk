@@ -11,21 +11,18 @@ RETAIL_CHANNEL = "https://t.me/+MTqIH-AFFjNmNTUy"
 WHOLESALE_CHANNEL = "svitkovbas"
 
 
-async def _fetch_yesterday_posts(client: TelegramClient, channel) -> list[dict]:
-    """Return list of {photo_bytes, caption} from yesterday in the channel."""
+async def _fetch_today_posts(client: TelegramClient, channel) -> list[dict]:
+    """Return list of {photo, caption} posted today in the channel."""
     kyiv = timezone(timedelta(hours=3))
     today = datetime.now(kyiv).date()
-    yesterday = today - timedelta(days=1)
 
     posts = []
     async for msg in client.iter_messages(channel, limit=50):
         if not msg.date:
             continue
         msg_date = msg.date.astimezone(kyiv).date()
-        if msg_date < yesterday:
+        if msg_date < today:
             break
-        if msg_date != yesterday:
-            continue
         if not msg.photo:
             continue
         photo_bytes = await client.download_media(msg.photo, bytes)
@@ -38,7 +35,7 @@ async def _fetch_yesterday_posts(client: TelegramClient, channel) -> list[dict]:
     return posts
 
 
-async def fetch_posts_for_today() -> dict:
+async def fetch_todays_posts() -> dict:
     """
     Returns:
         {
@@ -54,14 +51,14 @@ async def fetch_posts_for_today() -> dict:
 
     async with TelegramClient(StringSession(session_string), api_id, api_hash) as client:
         try:
-            result["retail"] = await _fetch_yesterday_posts(client, RETAIL_CHANNEL)
-            log.info(f"Retail posts yesterday: {len(result['retail'])}")
+            result["retail"] = await _fetch_today_posts(client, RETAIL_CHANNEL)
+            log.info(f"Retail posts today: {len(result['retail'])}")
         except Exception as e:
             log.error(f"Error reading retail channel: {e}")
 
         try:
-            result["wholesale"] = await _fetch_yesterday_posts(client, WHOLESALE_CHANNEL)
-            log.info(f"Wholesale posts yesterday: {len(result['wholesale'])}")
+            result["wholesale"] = await _fetch_today_posts(client, WHOLESALE_CHANNEL)
+            log.info(f"Wholesale posts today: {len(result['wholesale'])}")
         except Exception as e:
             log.error(f"Error reading wholesale channel: {e}")
 

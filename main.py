@@ -8,7 +8,7 @@ from facebook_client import FacebookClient
 from ai_handler import AIHandler
 from database import Database
 from analyze_trends import analyze_and_draft
-from telegram_reader import fetch_posts_for_today
+from telegram_reader import fetch_todays_posts
 
 load_dotenv()
 
@@ -32,69 +32,72 @@ def make_client() -> FacebookClient:
     )
 
 
-def post_from_telegram():
+def evening_check():
     """
-    Morning job: read yesterday's posts from both Telegram channels and publish to Facebook.
-
-    Priority logic:
-    - Retail (private) + Wholesale both have posts → publish retail, save wholesale to DB
-    - Only wholesale → publish wholesale
-    - Neither → use oldest saved wholesale from DB
-    - DB also empty → fall through to AI daily post
+    19:00 job:
+    1. Read today's posts from both TG channels.
+    2. Save all of them to reserve (always).
+    3. If FB already has a post today → do nothing more.
+    4. If no FB post today → publish: retail first, else wholesale, else pending reserve, else AI.
     """
-    log.info("=== Telegram → Facebook ===")
+    log.info("=== Evening check ===")
     db = Database()
-    client = make_client()
+    fb = make_client()
+    ai = AIHandler(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     try:
-        tg_posts = asyncio.run(fetch_posts_for_today())
-        retail = tg_posts.get("retail", [])
-        wholesale = tg_posts.get("wholesale", [])
+        tg = asyncio.run(fetch_todays_posts())
+        retail = tg.get("retail", [])
+        wholesale = tg.get("wholesale", [])
 
-        posts_to_publish = []
-        source = ""
+        # Always save all relevant TG posts to reserve
+        for post in retail + wholesale:
+            if ai.is_still_relevant(post["caption"]):
+                db.save_pending_wholesale(post["caption"], post["photo"])
+                log.info("Saved TG post to reserve.")
 
-        if retail:
-            posts_to_publish = retail
+        # Check if SMM already posted today
+        if fb.posted_today():
+            log.info("FB already has a post today — skipping publish.")
+            return
+
+        # Decide what to publish
+        relevant_retail = [p for p in retail if ai.is_still_relevant(p["caption"])]
+        relevant_wholesale = [p for p in wholesale if ai.is_still_relevant(p["caption"])]
+
+        if relevant_retail:
+            to_post = relevant_retail[0]
             source = "retail"
-            for w in wholesale:
-                db.save_pending_wholesale(w["caption"], w["photo"])
-                log.info("Saved wholesale post to pending queue.")
-        elif wholesale:
-            posts_to_publish = wholesale
+        elif relevant_wholesale:
+            to_post = relevant_wholesale[0]
             source = "wholesale"
         else:
             pending = db.pop_pending_wholesale()
             if pending:
-                posts_to_publish = [pending]
-                source = "pending wholesale"
+                to_post = pending
+                source = "reserve"
+            else:
+                to_post = None
+                source = "AI"
 
-        if not posts_to_publish:
-            log.info("No Telegram posts found — skipping (AI post will run separately).")
-            return
-
-        ai = AIHandler(api_key=os.environ["ANTHROPIC_API_KEY"])
-        relevant_posts = [p for p in posts_to_publish if ai.is_still_relevant(p["caption"])]
-
-        if not relevant_posts:
-            log.info(f"All {len(posts_to_publish)} post(s) from {source} are outdated — skipping.")
-            return
-
-        log.info(f"Publishing {len(relevant_posts)}/{len(posts_to_publish)} post(s) from {source}.")
-        for post in relevant_posts:
-            success = client.post_photo(post["photo"], post["caption"])
+        if to_post:
+            log.info(f"Publishing from {source}.")
+            success = fb.post_photo(to_post["photo"], to_post["caption"])
             if success:
                 db.mark_daily_post()
-                log.info("Photo post published.")
-            else:
-                log.error("Failed to publish photo post.")
+        else:
+            # Fallback: AI-generated post
+            log.info("No TG content — publishing AI post.")
+            post_text = ai.generate_daily_post()
+            if fb.create_post(post_text):
+                db.mark_daily_post()
 
     except Exception as e:
-        log.error(f"post_from_telegram error: {e}")
+        log.error(f"evening_check error: {e}")
     finally:
         db.close()
 
-    log.info("=== Telegram → Facebook done ===")
+    log.info("=== Evening check done ===")
 
 
 def daily_post():
@@ -233,12 +236,11 @@ def main():
         executors={"default": ThreadPoolExecutor(1)},
         timezone="Europe/Kyiv",
     )
-    scheduler.add_job(post_from_telegram, "cron", hour=9, minute=0, id="tg_post")
-    scheduler.add_job(daily_post, "cron", hour=9, minute=15, id="daily_post")
+    scheduler.add_job(evening_check, "cron", hour=19, minute=0, id="evening_check")
     scheduler.add_job(reply_to_own_comments, "cron", hour="8-21", minute="0,30", id="own_replies")
     scheduler.add_job(comment_on_other_pages, "cron", hour="9,12,15,18", minute=0, id="other_pages")
 
-    log.info("Scheduler started: TG post 09:00, AI fallback 09:15, replies every 30min (8-21), comments 4x/day.")
+    log.info("Scheduler started: evening check 19:00, replies every 30min (8-21), comments 4x/day.")
 
     try:
         scheduler.start()

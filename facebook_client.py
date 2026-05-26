@@ -1,5 +1,6 @@
 import requests
 import logging
+from datetime import datetime, timezone, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,23 @@ class FacebookClient:
         if result and "id" in result:
             log.info(f"Replied to comment {comment_id}: {result['id']}")
             return True
+        return False
+
+    def posted_today(self) -> bool:
+        """Check if the page already has a post published today (Kyiv time)."""
+        kyiv = timezone(timedelta(hours=3))
+        today = datetime.now(kyiv).date()
+        data = self._get(
+            f"{self.page_id}/posts",
+            {"fields": "created_time", "limit": 5},
+        )
+        for post in (data or {}).get("data", []):
+            try:
+                created = datetime.fromisoformat(post["created_time"].replace("Z", "+00:00"))
+                if created.astimezone(kyiv).date() == today:
+                    return True
+            except Exception:
+                continue
         return False
 
     def post_photo(self, photo: bytes, caption: str) -> bool:
