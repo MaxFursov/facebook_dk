@@ -68,6 +68,24 @@ class FacebookClient:
             return True
         return False
 
+    def post_photo(self, photo: bytes, caption: str) -> bool:
+        try:
+            r = requests.post(
+                f"{GRAPH_URL}/{self.page_id}/photos",
+                data={"caption": caption, "access_token": self.token},
+                files={"source": ("photo.jpg", photo, "image/jpeg")},
+                timeout=30,
+            )
+            r.raise_for_status()
+            result = r.json()
+            if "id" in result:
+                log.info(f"Photo posted: {result['id']}")
+                return True
+            return False
+        except Exception as e:
+            log.error(f"post_photo error: {e}")
+            return False
+
     def get_page_posts(self, page_id: str, limit: int = 10) -> list[dict]:
         """Get recent posts from another public page."""
         data = self._get(

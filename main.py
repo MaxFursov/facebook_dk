@@ -1,4 +1,4 @@
-import time
+import asyncio
 import os
 import logging
 from dotenv import load_dotenv
@@ -8,6 +8,7 @@ from facebook_client import FacebookClient
 from ai_handler import AIHandler
 from database import Database
 from analyze_trends import analyze_and_draft
+from telegram_reader import fetch_posts_for_today
 
 load_dotenv()
 
@@ -29,6 +30,64 @@ def make_client() -> FacebookClient:
         page_id=os.environ["FB_PAGE_ID"],
         access_token=os.environ["FB_PAGE_ACCESS_TOKEN"],
     )
+
+
+def post_from_telegram():
+    """
+    Morning job: read yesterday's posts from both Telegram channels and publish to Facebook.
+
+    Priority logic:
+    - Retail (private) + Wholesale both have posts → publish retail, save wholesale to DB
+    - Only wholesale → publish wholesale
+    - Neither → use oldest saved wholesale from DB
+    - DB also empty → fall through to AI daily post
+    """
+    log.info("=== Telegram → Facebook ===")
+    db = Database()
+    client = make_client()
+
+    try:
+        tg_posts = asyncio.run(fetch_posts_for_today())
+        retail = tg_posts.get("retail", [])
+        wholesale = tg_posts.get("wholesale", [])
+
+        posts_to_publish = []
+        source = ""
+
+        if retail:
+            posts_to_publish = retail
+            source = "retail"
+            for w in wholesale:
+                db.save_pending_wholesale(w["caption"], w["photo"])
+                log.info("Saved wholesale post to pending queue.")
+        elif wholesale:
+            posts_to_publish = wholesale
+            source = "wholesale"
+        else:
+            pending = db.pop_pending_wholesale()
+            if pending:
+                posts_to_publish = [pending]
+                source = "pending wholesale"
+
+        if not posts_to_publish:
+            log.info("No Telegram posts found — skipping (AI post will run separately).")
+            return
+
+        log.info(f"Publishing {len(posts_to_publish)} post(s) from {source}.")
+        for post in posts_to_publish:
+            success = client.post_photo(post["photo"], post["caption"])
+            if success:
+                db.mark_daily_post()
+                log.info("Photo post published.")
+            else:
+                log.error("Failed to publish photo post.")
+
+    except Exception as e:
+        log.error(f"post_from_telegram error: {e}")
+    finally:
+        db.close()
+
+    log.info("=== Telegram → Facebook done ===")
 
 
 def daily_post():
@@ -167,11 +226,12 @@ def main():
         executors={"default": ThreadPoolExecutor(1)},
         timezone="Europe/Kyiv",
     )
-    scheduler.add_job(daily_post, "cron", hour=9, minute=0, id="daily_post")
+    scheduler.add_job(post_from_telegram, "cron", hour=9, minute=0, id="tg_post")
+    scheduler.add_job(daily_post, "cron", hour=9, minute=15, id="daily_post")
     scheduler.add_job(reply_to_own_comments, "cron", hour="8-21", minute="0,30", id="own_replies")
     scheduler.add_job(comment_on_other_pages, "cron", hour="9,12,15,18", minute=0, id="other_pages")
 
-    log.info("Scheduler started: daily post 09:00, replies every 30min (8-21), comments 4x/day.")
+    log.info("Scheduler started: TG post 09:00, AI fallback 09:15, replies every 30min (8-21), comments 4x/day.")
 
     try:
         scheduler.start()
