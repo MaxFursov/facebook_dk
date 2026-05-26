@@ -47,9 +47,46 @@ DAILY_POST_SYSTEM = """Ти SMM-менеджер компанії "Ділова 
 - Новини ринку: тренди в м'ясній галузі України"""
 
 
+RELEVANCE_SYSTEM = """Ти перевіряєш чи буде пост актуальним ЗАВТРА, якщо його опублікувати на наступний день після написання.
+
+Відповідай ТІЛЬКИ: YES або NO
+
+NO якщо пост містить:
+- "сьогодні", "сьогодення", "зараз", "прямо зараз"
+- "приходьте", "приходь", "завітайте" з прив'язкою до конкретного дня
+- "дегустація", "акція", "розпродаж" що явно проходять сьогодні
+- конкретний час події ("з 10:00 до 18:00", "до кінця дня")
+- "останній день", "тільки сьогодні", "встигніть"
+
+YES якщо пост про:
+- загальну інформацію про товари, ціни, асортимент
+- новини без прив'язки до конкретного дня
+- фото продукції без часових обмежень
+- акції без чіткої дати закінчення"""
+
+
 class AIHandler:
     def __init__(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
+
+    def is_still_relevant(self, caption: str) -> bool:
+        if not caption or not caption.strip():
+            return True
+        try:
+            msg = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                system=RELEVANCE_SYSTEM,
+                messages=[{"role": "user", "content": caption}],
+            )
+            answer = msg.content[0].text.strip().upper()
+            relevant = answer.startswith("YES")
+            if not relevant:
+                log.info(f"Post skipped as outdated: {caption[:80]}")
+            return relevant
+        except Exception as e:
+            log.error(f"Relevance check error: {e}")
+            return True  # якщо помилка — не блокуємо
 
     def generate_reply(self, post_text: str) -> str | None:
         try:

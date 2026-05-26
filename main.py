@@ -73,8 +73,15 @@ def post_from_telegram():
             log.info("No Telegram posts found — skipping (AI post will run separately).")
             return
 
-        log.info(f"Publishing {len(posts_to_publish)} post(s) from {source}.")
-        for post in posts_to_publish:
+        ai = AIHandler(api_key=os.environ["ANTHROPIC_API_KEY"])
+        relevant_posts = [p for p in posts_to_publish if ai.is_still_relevant(p["caption"])]
+
+        if not relevant_posts:
+            log.info(f"All {len(posts_to_publish)} post(s) from {source} are outdated — skipping.")
+            return
+
+        log.info(f"Publishing {len(relevant_posts)}/{len(posts_to_publish)} post(s) from {source}.")
+        for post in relevant_posts:
             success = client.post_photo(post["photo"], post["caption"])
             if success:
                 db.mark_daily_post()
