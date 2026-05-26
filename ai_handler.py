@@ -1,7 +1,12 @@
 import anthropic
+import base64
 import logging
+import random
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+PHOTOS_DIR = Path("photos")
 
 REPLY_SYSTEM = """Ти AI-помічник сторінки "Ділова Ковбаса" у Facebook.
 Компанія: B2B постачальник м'ясних виробів. 950+ позицій від 50+ українських виробників. Доставка Новою Поштою. Сайт: https://www.dilovakovbasa.ua
@@ -24,45 +29,62 @@ REPLY_SYSTEM = """Ти AI-помічник сторінки "Ділова Ков
 
 Якщо коментар НЕДОРЕЧНИЙ — відповідай ТІЛЬКИ: NULL"""
 
-DAILY_POST_SYSTEM = """Ти SMM-менеджер компанії "Ділова Ковбаса" — B2B постачальника м'ясних виробів.
-950+ позицій від 50+ українських виробників. Доставка Новою Поштою. Сайт: https://www.dilovakovbasa.ua
+PHOTO_POST_SYSTEM = """Ти SMM-менеджер компанії "Ділова Ковбаса" — B2B постачальника м'ясних виробів.
+950+ позицій від 50+ українських виробників. Доставка Новою Поштою.
+Сайт: https://www.dilovakovbasa.ua
+Замовлення: телефон 093 035 17 36, сайт dilovakovbasa.ua, Telegram або Viber.
 
-Пишеш пости для Facebook-сторінки. Аудиторія — підприємці, власники магазинів, ресторанів, кафе, ринків.
+Тобі дають фото. Напиши пост для Facebook на основі того, що зображено.
 
 ПРАВИЛА:
-- 3-5 речень максимум
-- Живий, людський тон — як від реальної людини, не корпоративно
-- Часто завершуй питанням до аудиторії (щоб провокувати коментарі)
-- Іноді згадуй сайт, але не в кожному пості
-- Без хештегів, без емодзі
+- 3-5 речень
+- Живий тон, як від реальної людини
+- Можна використовувати емодзі (помірно, як у прикладі)
+- В кожному пості згадай один спосіб замовлення (чергуй: сайт / телефон / Telegram / Viber)
 - Мова: тільки українська
+- НЕ повторюй один і той самий шаблон щоразу — кожен пост унікальний
 
-ТЕМИ (чергуй різні):
-- Питання до аудиторії: "Яка ковбаса краще продається влітку — варена чи сирокопчена?"
-- Факти про продукт: чим відрізняються виробники, технологія виготовлення
-- Кейси: скільки можна заощадити при гуртовій закупівлі
-- Сезонність: що краще продається влітку/взимку, до свят
-- Порівняння виробників без осуду
-- Практичні поради для роздрібу: що брати в асортимент
-- Новини ринку: тренди в м'ясній галузі України"""
+ПРИКЛАД СТИЛЮ:
+В Ділова Ковбаса ми забезпечуємо ваш бізнес найкращою продукцією щодня! 🥩
+Наші ковбаси, сардельки та делікатеси — це гарантія якості, якій ви можете довіряти.
+З нами ваш бізнес отримує не лише продукцію чудової якості за найвигіднішими цінами.
+Ділова Ковбаса — надійний партнер для вашого бізнесу! 🔥
+Для замовлення телефонуйте: 📱 093 035 17 36
 
+ВАЖЛИВО: повертай ТІЛЬКИ текст посту. Без заголовків, без markdown."""
 
 RELEVANCE_SYSTEM = """Ти перевіряєш чи буде пост актуальним ЗАВТРА, якщо його опублікувати на наступний день після написання.
 
 Відповідай ТІЛЬКИ: YES або NO
 
 NO якщо пост містить:
-- "сьогодні", "сьогодення", "зараз", "прямо зараз"
-- "приходьте", "приходь", "завітайте" з прив'язкою до конкретного дня
+- "сьогодні", "зараз", "прямо зараз"
+- "приходьте", "завітайте" з прив'язкою до конкретного дня
 - "дегустація", "акція", "розпродаж" що явно проходять сьогодні
 - конкретний час події ("з 10:00 до 18:00", "до кінця дня")
 - "останній день", "тільки сьогодні", "встигніть"
 
 YES якщо пост про:
 - загальну інформацію про товари, ціни, асортимент
-- новини без прив'язки до конкретного дня
 - фото продукції без часових обмежень
 - акції без чіткої дати закінчення"""
+
+PHOTO_CHECK_SYSTEM = """Ти перевіряєш чи підходить фото для публікації на сторінці м'ясного B2B постачальника "Ділова Ковбаса".
+
+Відповідай ТІЛЬКИ: YES або NO
+
+YES якщо на фото:
+- ковбаси, сосиски, м'ясні вироби, делікатеси
+- вітрина або полиці з м'ясними продуктами
+- команда або співробітники компанії
+- склад, магазин, торговий зал з продукцією
+- упаковка або асортимент м'ясних виробів
+
+NO якщо на фото:
+- люди без контексту продукції (портрети, вечірки)
+- природа, пейзажі, будівлі без продукції
+- документи, скріншоти, текст
+- незрозуміло що зображено"""
 
 
 class AIHandler:
@@ -86,7 +108,57 @@ class AIHandler:
             return relevant
         except Exception as e:
             log.error(f"Relevance check error: {e}")
-            return True  # якщо помилка — не блокуємо
+            return True
+
+    def _encode_image(self, path: Path) -> str:
+        return base64.standard_b64encode(path.read_bytes()).decode("utf-8")
+
+    def is_photo_suitable(self, photo_path: Path) -> bool:
+        try:
+            img_data = self._encode_image(photo_path)
+            msg = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                system=PHOTO_CHECK_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}}],
+                }],
+            )
+            answer = msg.content[0].text.strip().upper()
+            return answer.startswith("YES")
+        except Exception as e:
+            log.error(f"Photo check error for {photo_path.name}: {e}")
+            return False
+
+    def pick_suitable_photo(self, max_tries: int = 10) -> Path | None:
+        photos = list(PHOTOS_DIR.glob("*.jpg")) + list(PHOTOS_DIR.glob("*.jpeg"))
+        if not photos:
+            return None
+        random.shuffle(photos)
+        for photo in photos[:max_tries]:
+            if self.is_photo_suitable(photo):
+                log.info(f"Suitable photo found: {photo.name}")
+                return photo
+        log.warning("No suitable photo found after tries.")
+        return None
+
+    def generate_post_with_photo(self, photo_path: Path) -> str:
+        try:
+            img_data = self._encode_image(photo_path)
+            msg = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=400,
+                system=PHOTO_POST_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}}],
+                }],
+            )
+            return msg.content[0].text.strip()
+        except Exception as e:
+            log.error(f"Photo post generation error: {e}")
+            return self.generate_daily_post()
 
     def generate_reply(self, post_text: str) -> str | None:
         try:
@@ -103,7 +175,6 @@ class AIHandler:
             return None
 
     def generate_daily_post(self) -> str:
-        import random
         topics = [
             "Тема: яка ковбаса краще продається влітку. Закінчи питанням до читачів.",
             "Тема: як формувати асортимент м'ясних виробів у невеликому магазині.",
@@ -120,7 +191,7 @@ class AIHandler:
             msg = self.client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=300,
-                system=DAILY_POST_SYSTEM + "\n\nВАЖЛИВО: повертай ТІЛЬКИ текст посту — без заголовків, без варіантів, без markdown, без зірочок. Один готовий пост.",
+                system=PHOTO_POST_SYSTEM,
                 messages=[{"role": "user", "content": topic}],
             )
             return msg.content[0].text.strip()

@@ -86,11 +86,17 @@ def evening_check():
             if success:
                 db.mark_daily_post()
         else:
-            # Fallback: AI-generated post
-            log.info("No TG content — publishing AI post.")
-            post_text = ai.generate_daily_post()
-            if fb.create_post(post_text):
-                db.mark_daily_post()
+            # Fallback: AI post with photo from local library
+            log.info("No TG content — publishing AI post with photo.")
+            photo_path = ai.pick_suitable_photo()
+            if photo_path:
+                post_text = ai.generate_post_with_photo(photo_path)
+                if fb.post_photo(photo_path.read_bytes(), post_text):
+                    db.mark_daily_post()
+            else:
+                post_text = ai.generate_daily_post()
+                if fb.create_post(post_text):
+                    db.mark_daily_post()
 
     except Exception as e:
         log.error(f"evening_check error: {e}")

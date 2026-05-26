@@ -3,3 +3,5 @@ bot.db
 __pycache__/
 *.pyc
 .DS_Store
+# photos are deployed via railway up, not git
+
